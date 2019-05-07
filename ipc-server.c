@@ -1,3 +1,4 @@
+#define _XOPEN_SOURCE 500
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,11 +12,11 @@
 #include "ipc.h"
 #include "log.h"
 
-static struct sockaddr_un *ipc_user_sockaddr(void);
+static struct sockaddr_un *ipc_user_sockaddr();
 
 typedef int (*cmd_handler)(void *payload);
 
-int ipc_init(char *sock_path) {
+int ipc_init(char **sock_path) {
         int ipc_socket = socket(AF_UNIX, SOCK_STREAM, 0);
 
         if (ipc_socket == -1) {
@@ -40,10 +41,12 @@ int ipc_init(char *sock_path) {
 		goto fail;
 
         // We want to use socket name set by user, not existing socket from another sway instance.
-        if (sock_path != NULL && access(sock_path, R_OK) == -1) {
-                strncpy(ipc_sockaddr->sun_path, sock_path, sizeof(ipc_sockaddr->sun_path) - 1);
+        if (sock_path && *sock_path && access(*sock_path, R_OK) == -1) {
+                strncpy(ipc_sockaddr->sun_path, *sock_path, sizeof(ipc_sockaddr->sun_path) - 1);
                 ipc_sockaddr->sun_path[sizeof(ipc_sockaddr->sun_path) - 1] = 0;
-        }
+        } else if (sock_path && !*sock_path) {
+		*sock_path = strdup(ipc_sockaddr->sun_path);
+	}
 
         unlink(ipc_sockaddr->sun_path);
         if (bind(ipc_socket, (struct sockaddr *)ipc_sockaddr, sizeof(*ipc_sockaddr)) == -1) {
@@ -68,7 +71,7 @@ fail:
 }
 
 
-struct sockaddr_un *ipc_user_sockaddr(void) {
+struct sockaddr_un *ipc_user_sockaddr() {
         struct sockaddr_un *ipc_sockaddr = malloc(sizeof(struct sockaddr_un));
         if (ipc_sockaddr == NULL) {
                 swaybg_log(LOG_ERROR, "Can't allocate ipc_sockaddr");
@@ -83,8 +86,9 @@ struct sockaddr_un *ipc_user_sockaddr(void) {
         if (!dir) {
                 dir = "/tmp";
         }
+	const char *display = getenv("WAYLAND_DISPLAY");
         if (path_size <= snprintf(ipc_sockaddr->sun_path, path_size,
-                        "%s/swaybg-ipc.%i.%i.sock", dir, getuid(), getpid())) {
+                        "%s/swaybg.%s", dir, display)) {
                 swaybg_log(LOG_ERROR, "Socket path won't fit into ipc_sockaddr->sun_path");
 		return NULL;
         }
@@ -214,10 +218,5 @@ int ipc_handle_readable(int client_fd, struct ipc_header *pending) {
 
 void ipc_shutdown(int ipc_socket, char *sock_path) {
 	close(ipc_socket);
-	if (sock_path) {
-		unlink(sock_path);
-	} else {
-		struct sockaddr_un *ipc_sockaddr = ipc_user_sockaddr();
-		unlink(ipc_sockaddr->sun_path);
-	}
+	unlink(sock_path);
 }

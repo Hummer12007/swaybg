@@ -18,6 +18,8 @@
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "xdg-output-unstable-v1-client-protocol.h"
 
+static char *socket_path;
+
 static uint32_t parse_color(const char *color) {
 	if (color[0] == '#') {
 		++color;
@@ -77,7 +79,6 @@ struct swaybg_output {
 	struct wl_list link;
 };
 
-static char *socket_path;
 
 bool is_valid_color(const char *color) {
 	int len = strlen(color);
@@ -467,7 +468,7 @@ static void parse_command_line(int argc, char **argv,
 			exit(EXIT_SUCCESS);
 			break;
 		case 's': // socket
-			socket_path = optarg;
+			socket_path = strdup(optarg);
 			break;
 		default:
 			fprintf(c == 'h' ? stdout : stderr, "%s", usage);
@@ -608,12 +609,6 @@ int main(int argc, char **argv) {
 
 	parse_command_line(argc, argv, &state);
 
-	state.ipc_socket = ipc_init(socket_path);
-	if (state.ipc_socket == -1) {
-		swaybg_log(LOG_ERROR, "Unable to setup IPC socket.");
-		return 1;
-	}
-
 	state.display = wl_display_connect(NULL);
 	if (!state.display) {
 		swaybg_log(LOG_ERROR, "Unable to connect to the compositor. "
@@ -639,11 +634,19 @@ int main(int argc, char **argv) {
 			&xdg_output_listener, output);
 	}
 
+	state.ipc_socket = ipc_init(&socket_path);
+	if (state.ipc_socket == -1) {
+		swaybg_log(LOG_ERROR, "Unable to setup IPC socket.");
+		return 1;
+	}
+
+
 	state.run_display = true;
 
 	run_main_loop(&state);
 
 	ipc_shutdown(state.ipc_socket, socket_path);
+	free(socket_path);
 
 	struct swaybg_output *tmp_output;
 	wl_list_for_each_safe(output, tmp_output, &state.outputs, link) {
