@@ -573,7 +573,7 @@ void run_main_loop(struct swaybg_state *state) {
 				}
 			}
 			fds[nextfd].fd = fd;
-			fds[nextfd].events = 0; //TODO: POLLIN
+			fds[nextfd].events = POLLIN;
 			++nextfd;
 		}
 
@@ -586,7 +586,9 @@ void run_main_loop(struct swaybg_state *state) {
 				--nextfd;
 				continue;
 			}
-			// TODO: handle command here
+			if (fds[i].revents & POLLIN) {
+				ipc_handle_readable(fds[i].fd, &pending[i]);
+			}
 		}
 	}
 
