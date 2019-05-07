@@ -11,6 +11,7 @@
 #include <wayland-client.h>
 #include "background-image.h"
 #include "cairo.h"
+#include "ipc.h"
 #include "ipc-server.h"
 #include "log.h"
 #include "pool-buffer.h"
@@ -517,6 +518,12 @@ void run_main_loop(struct swaybg_state *state) {
 		return;
 	}
 
+	struct ipc_header *pending = calloc(fdcap, sizeof(struct ipc_header));
+	if (pending == NULL) {
+		swaybg_log(LOG_ERROR, "Failed to allocate headers");
+		return;
+	}
+
 	struct pollfd wlfd = {
 		.fd = wl_display_get_fd(state->display),
 		.events = POLLIN,
@@ -556,8 +563,13 @@ void run_main_loop(struct swaybg_state *state) {
 			if (nextfd > fdcap) {
 				fds = realloc(fds, fdcap *= 2);
 				if (fds == NULL) {
-					swaybg_log(LOG_ERROR, "Failed to allocate pollfds");
+					swaybg_log(LOG_ERROR, "Failed to reallocate pollfds");
 					break;
+				}
+				pending = realloc(pending, fdcap *= 2);
+				if (pending == NULL) {
+					swaybg_log(LOG_ERROR, "Failed to reallocate headers");
+					return;
 				}
 			}
 			fds[nextfd].fd = fd;
@@ -569,6 +581,7 @@ void run_main_loop(struct swaybg_state *state) {
 			if (fds[i].revents & POLLHUP) {
 				close(fds[i].fd);
 				memmove(&fds[i], &fds[i + 1], nextfd - i - 1);
+				memmove(&pending[i], &pending[i + 1], nextfd - i - 1);
 				--i;
 				--nextfd;
 				continue;
