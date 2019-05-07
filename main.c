@@ -11,7 +11,7 @@
 #include <wayland-client.h>
 #include "background-image.h"
 #include "cairo.h"
-#include "ipc.h"
+#include "ipc-server.h"
 #include "log.h"
 #include "pool-buffer.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
