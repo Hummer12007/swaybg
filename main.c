@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <ctype.h>
 #include <getopt.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +11,7 @@
 #include <wayland-client.h>
 #include "background-image.h"
 #include "cairo.h"
+#include "ipc.h"
 #include "log.h"
 #include "pool-buffer.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
@@ -41,6 +43,7 @@ struct swaybg_state {
 	struct zxdg_output_manager_v1 *xdg_output_manager;
 	struct wl_list configs;  // struct swaybg_output_config::link
 	struct wl_list outputs;  // struct swaybg_output::link
+	int ipc_socket;
 	bool run_display;
 };
 
@@ -72,6 +75,8 @@ struct swaybg_output {
 
 	struct wl_list link;
 };
+
+static char *socket_path;
 
 bool is_valid_color(const char *color) {
 	int len = strlen(color);
@@ -395,6 +400,7 @@ static void parse_command_line(int argc, char **argv,
 		{"mode", required_argument, NULL, 'm'},
 		{"output", required_argument, NULL, 'o'},
 		{"version", no_argument, NULL, 'v'},
+		{"socket", no_argument, NULL, 's'},
 		{0, 0, 0, 0}
 	};
 
@@ -407,6 +413,7 @@ static void parse_command_line(int argc, char **argv,
 		"  -m, --mode             Set the mode to use for the image.\n"
 		"  -o, --output           Set the output to operate on or * for all.\n"
 		"  -v, --version          Show the version number and quit.\n"
+		"  -s, --socket           Set custom socket path.\n"
 		"\n"
 		"Background Modes:\n"
 		"  stretch, fit, fill, center, tile, or solid_color\n";
@@ -419,7 +426,7 @@ static void parse_command_line(int argc, char **argv,
 	int c;
 	while (1) {
 		int option_index = 0;
-		c = getopt_long(argc, argv, "c:hi:m:o:v", long_options, &option_index);
+		c = getopt_long(argc, argv, "c:hi:m:o:vs:", long_options, &option_index);
 		if (c == -1) {
 			break;
 		}
@@ -457,6 +464,9 @@ static void parse_command_line(int argc, char **argv,
 		case 'v':  // version
 			fprintf(stdout, "swaybg version " SWAYBG_VERSION "\n");
 			exit(EXIT_SUCCESS);
+			break;
+		case 's': // socket
+			socket_path = optarg;
 			break;
 		default:
 			fprintf(c == 'h' ? stdout : stderr, "%s", usage);
@@ -496,6 +506,84 @@ static void parse_command_line(int argc, char **argv,
 	}
 }
 
+enum swaybg_events { SWAYBG_EVENT_WAYLAND, SWAYBG_EVENT_SOCKET, SWAYBG_EVENT_CLIENTS };
+
+void run_main_loop(struct swaybg_state *state) {
+	int nextfd, fdcap = 10;
+
+	struct pollfd *fds = calloc(fdcap, sizeof(struct pollfd));
+	if (fds == NULL) {
+		swaybg_log(LOG_ERROR, "Failed to allocate pollfds");
+		return;
+	}
+
+	struct pollfd wlfd = {
+		.fd = wl_display_get_fd(state->display),
+		.events = POLLIN,
+	};
+	struct pollfd socketfd = {
+		.fd = state->ipc_socket,
+		.events = POLLIN,
+	};
+
+	memcpy(&fds[SWAYBG_EVENT_WAYLAND], &wlfd, sizeof(struct pollfd));
+	memcpy(&fds[SWAYBG_EVENT_SOCKET], &socketfd, sizeof(struct pollfd));
+
+	nextfd = SWAYBG_EVENT_CLIENTS;
+
+	while (state->run_display) {
+		errno = 0;
+		if (poll(fds, nextfd, -1) < 0) {
+			swaybg_log_errno(LOG_ERROR, "Poll failed");
+			break;
+		}
+
+		if (fds[SWAYBG_EVENT_WAYLAND].revents & POLLIN) {
+			if (wl_display_dispatch(state->display) < 0) {
+				swaybg_log(LOG_ERROR, "wl_display_dispatch failed");
+				break;
+			}
+		}
+		if (fds[SWAYBG_EVENT_WAYLAND].revents & POLLOUT) {
+			if (wl_display_flush(state->display) < 0) {
+				swaybg_log(LOG_ERROR, "wl_display_flush failed");
+				break;
+			}
+		}
+
+		if (fds[SWAYBG_EVENT_SOCKET].revents & POLLIN) {
+			int fd = ipc_handle_connection(fds[SWAYBG_EVENT_SOCKET].fd);
+			if (nextfd > fdcap) {
+				fds = realloc(fds, fdcap *= 2);
+				if (fds == NULL) {
+					swaybg_log(LOG_ERROR, "Failed to allocate pollfds");
+					break;
+				}
+			}
+			fds[nextfd].fd = fd;
+			fds[nextfd].events = 0; //TODO: POLLIN
+			++nextfd;
+		}
+
+		for (int i = SWAYBG_EVENT_CLIENTS; i < nextfd; ++i) {
+			if (fds[i].revents & POLLHUP) {
+				close(fds[i].fd);
+				memmove(&fds[i], &fds[i + 1], nextfd - i - 1);
+				--i;
+				--nextfd;
+				continue;
+			}
+			// TODO: handle command here
+		}
+	}
+
+	for (int i = SWAYBG_EVENT_CLIENTS; i < nextfd; ++i) {
+		close(fds[i].fd);
+	}
+
+	free(fds);
+}
+
 int main(int argc, char **argv) {
 	swaybg_log_init(LOG_DEBUG);
 
@@ -504,6 +592,12 @@ int main(int argc, char **argv) {
 	wl_list_init(&state.outputs);
 
 	parse_command_line(argc, argv, &state);
+
+	state.ipc_socket = ipc_init(socket_path);
+	if (state.ipc_socket == -1) {
+		swaybg_log(LOG_ERROR, "Unable to setup IPC socket.");
+		return 1;
+	}
 
 	state.display = wl_display_connect(NULL);
 	if (!state.display) {
@@ -531,9 +625,10 @@ int main(int argc, char **argv) {
 	}
 
 	state.run_display = true;
-	while (wl_display_dispatch(state.display) != -1 && state.run_display) {
-		// This space intentionally left blank
-	}
+
+	run_main_loop(&state);
+
+	ipc_shutdown(state.ipc_socket, socket_path);
 
 	struct swaybg_output *tmp_output;
 	wl_list_for_each_safe(output, tmp_output, &state.outputs, link) {
