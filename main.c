@@ -665,7 +665,6 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
-
 	state.run_display = true;
 
 	run_main_loop(&state);

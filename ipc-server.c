@@ -127,7 +127,7 @@ int ipc_handle_connection(int ipc_socket) {
 
 int ipc_send_reply(struct ipc_client_state *state, uint32_t len, uint32_t type, void *payload) {
 	if (!state->write_buffer) {
-		state->write_buffer = 
+		state->write_buffer =
 			calloc(1, state->bufsize = 1024);
 	}
 	struct ipc_header header = {
