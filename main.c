@@ -512,6 +512,7 @@ enum swaybg_events { SWAYBG_EVENT_WAYLAND, SWAYBG_EVENT_SOCKET, SWAYBG_EVENT_CLI
 
 void run_main_loop(struct swaybg_state *state) {
 	int nextfd, fdcap = 10;
+	int ret = 0;
 
 	struct pollfd *fds = calloc(fdcap, sizeof(struct pollfd));
 	if (fds == NULL) {
@@ -519,8 +520,8 @@ void run_main_loop(struct swaybg_state *state) {
 		return;
 	}
 
-	struct ipc_header *pending = calloc(fdcap, sizeof(struct ipc_header));
-	if (pending == NULL) {
+	struct ipc_client_state *clients = calloc(fdcap, sizeof(struct ipc_client_state));
+	if (clients == NULL) {
 		swaybg_log(LOG_ERROR, "Failed to allocate headers");
 		return;
 	}
@@ -541,6 +542,11 @@ void run_main_loop(struct swaybg_state *state) {
 
 	while (state->run_display) {
 		errno = 0;
+		do {
+			ret = wl_display_dispatch_pending(state->display);
+			wl_display_flush(state->display);
+		} while (ret > 0);
+
 		if (poll(fds, nextfd, -1) < 0) {
 			swaybg_log_errno(LOG_ERROR, "Poll failed");
 			break;
@@ -567,28 +573,47 @@ void run_main_loop(struct swaybg_state *state) {
 					swaybg_log(LOG_ERROR, "Failed to reallocate pollfds");
 					break;
 				}
-				pending = realloc(pending, fdcap *= 2);
-				if (pending == NULL) {
+				clients = realloc(clients, fdcap *= 2);
+				if (clients == NULL) {
 					swaybg_log(LOG_ERROR, "Failed to reallocate headers");
 					return;
 				}
 			}
 			fds[nextfd].fd = fd;
-			fds[nextfd].events = POLLIN;
+			fds[nextfd].events = POLLIN|POLLHUP;
+			fds[nextfd].revents = 0;
+			memset(&clients[nextfd], 0, sizeof(struct ipc_client_state));
 			++nextfd;
 		}
 
 		for (int i = SWAYBG_EVENT_CLIENTS; i < nextfd; ++i) {
+			bool disconnect = false;
 			if (fds[i].revents & POLLHUP) {
+				disconnect = true;
+			} else {
+				if (fds[i].revents & POLLIN) {
+					if (ipc_handle_readable(fds[i].fd, &clients[i]) < 0)
+						disconnect = true;
+					if (clients[i].buflen > 0)
+						fds[i].events |= POLLOUT;
+				}
+				if (fds[i].revents & POLLOUT) {
+					if (ipc_handle_writable(fds[i].fd, &clients[i]) < 0)
+						disconnect = true;
+					if (clients[i].buflen == 0)
+						fds[i].events &= ~POLLOUT;
+				}
+			}
+			if (disconnect) {
+				swaybg_log(LOG_DEBUG, "Client %d disconnected", fds[i].fd);
+				shutdown(fds[i].fd, SHUT_RDWR);
 				close(fds[i].fd);
+				if (clients[i].write_buffer)
+					free(clients[i].write_buffer);
 				memmove(&fds[i], &fds[i + 1], nextfd - i - 1);
-				memmove(&pending[i], &pending[i + 1], nextfd - i - 1);
+				memmove(&clients[i], &clients[i + 1], nextfd - i - 1);
 				--i;
 				--nextfd;
-				continue;
-			}
-			if (fds[i].revents & POLLIN) {
-				ipc_handle_readable(fds[i].fd, &pending[i]);
 			}
 		}
 	}
