@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/socket.h>
 #include <wayland-client.h>
 #include "background-image.h"
 #include "cairo.h"
@@ -508,6 +509,43 @@ static void parse_command_line(int argc, char **argv,
 	}
 }
 
+
+int handle_set(uint32_t payload_len, void *payload, struct ipc_client_state *client_state, void *data) {
+	struct swaybg_state *state = data;
+	swaybg_log(LOG_DEBUG, "Received a SET request");
+	struct swaybg_output_config *config;
+	struct swaybg_output *output;
+	cairo_surface_t *image;
+	wl_list_for_each(config, &state->configs, link) {
+		if ((image = load_background_image((char *) payload))) {
+			free(config->image);
+			config->image = image;
+		}
+	}
+	wl_list_for_each(output, &state->outputs, link) {
+		render_frame(output);
+	}
+	return ipc_send_reply(client_state, 3, IPC_REPLY_SUCCESS, "OK");
+}
+
+int handle_load(uint32_t payload_len, void *payload, struct ipc_client_state *client_state, void *data) {
+	(void) payload;
+	swaybg_log(LOG_DEBUG, "Received a LOAD request");
+	return ipc_send_reply(client_state, 3, IPC_REPLY_SUCCESS, "OK");
+}
+
+int handle_flush(uint32_t payload_len, void *payload, struct ipc_client_state *client_state, void *data) {
+	(void) payload;
+	swaybg_log(LOG_DEBUG, "Received a FLUSH request");
+	return ipc_send_reply(client_state, 3, IPC_REPLY_SUCCESS, "OK");
+}
+
+struct ipc_command_handler command_handler = {
+	.set = handle_set,
+	.load = handle_load,
+	.flush = handle_flush,
+};
+
 enum swaybg_events { SWAYBG_EVENT_WAYLAND, SWAYBG_EVENT_SOCKET, SWAYBG_EVENT_CLIENTS };
 
 void run_main_loop(struct swaybg_state *state) {
@@ -539,6 +577,8 @@ void run_main_loop(struct swaybg_state *state) {
 	memcpy(&fds[SWAYBG_EVENT_SOCKET], &socketfd, sizeof(struct pollfd));
 
 	nextfd = SWAYBG_EVENT_CLIENTS;
+
+	ipc_set_command_handler(&command_handler, state);
 
 	while (state->run_display) {
 		errno = 0;

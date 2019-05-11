@@ -15,7 +15,8 @@
 
 static struct sockaddr_un *ipc_user_sockaddr();
 
-typedef int (*cmd_handler)(void *payload, struct ipc_client_state *client_state);
+static struct ipc_command_handler *command_handler;
+static void *command_data;
 
 int ipc_init(char **sock_path) {
 	int ipc_socket = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -147,35 +148,13 @@ int ipc_send_reply(struct ipc_client_state *state, uint32_t len, uint32_t type, 
 	}
 	memcpy(state->write_buffer + state->buflen, &header, sizeof(struct ipc_header));
 	state->buflen += sizeof(struct ipc_header);
-	memcpy(state->write_buffer + state->buflen, payload, len);
-	state->buflen += len;
+	if (payload != NULL) {
+		memcpy(state->write_buffer + state->buflen, payload, len);
+		state->buflen += len;
+	}
 
 	return 0;
 }
-
-int ipc_handle_set(void *payload, struct ipc_client_state *client_state) {
-	(void) payload;
-	swaybg_log(LOG_DEBUG, "Received a SET request");
-	return ipc_send_reply(client_state, 3, IPC_REPLY_SUCCESS, "OK");
-}
-
-int ipc_handle_load(void *payload, struct ipc_client_state *client_state) {
-	(void) payload;
-	swaybg_log(LOG_DEBUG, "Received a LOAD request");
-	return ipc_send_reply(client_state, 3, IPC_REPLY_SUCCESS, "OK");
-}
-
-int ipc_handle_flush(void *payload, struct ipc_client_state *client_state) {
-	(void) payload;
-	swaybg_log(LOG_DEBUG, "Received a FLUSH request");
-	return ipc_send_reply(client_state, 3, IPC_REPLY_SUCCESS, "OK");
-}
-
-static cmd_handler handlers[IPC_MESSAGE_COUNT] = {
-	[IPC_MESSAGE_SET] = ipc_handle_set,
-	[IPC_MESSAGE_LOAD] = ipc_handle_load,
-	[IPC_MESSAGE_FLUSH] = ipc_handle_flush,
-};
 
 
 int ipc_read_command(int client_fd, struct ipc_client_state *client_state) {
@@ -189,7 +168,7 @@ int ipc_read_command(int client_fd, struct ipc_client_state *client_state) {
 	client_state->pending_read.type = IPC_MESSAGE_COUNT;
 	client_state->pending_read.length = 0;
 
-	void *payload = calloc(1, length);
+	void *payload = calloc(1, length + 1);
 	if (payload == NULL) {
 		swaybg_log(LOG_INFO, "Unable to allocate IPC payload of size %u",
 			client_state->pending_read.length);
@@ -204,7 +183,33 @@ int ipc_read_command(int client_fd, struct ipc_client_state *client_state) {
 		return -1;
 	}
 
-	return handlers[type](payload, client_state);
+	((char *)payload)[length] = '\0'; // null-terminate the payload
+
+	if (command_handler == NULL) {
+		swaybg_log(LOG_ERROR, "Command handler not set up!");
+		goto dispatch_fail;
+		free(payload);
+		return 0;
+	}
+
+	cmd_handler handler;
+
+	switch (type) {
+		case IPC_MESSAGE_SET: handler = command_handler->set; break;
+		case IPC_MESSAGE_LOAD: handler = command_handler->load; break;
+		case IPC_MESSAGE_FLUSH: handler = command_handler->flush; break;
+	}
+
+	if (handler == NULL) {
+		swaybg_log(LOG_ERROR, "Unhandled command type!");
+		goto dispatch_fail;
+	}
+
+	handler(length, payload, client_state, command_data);
+
+dispatch_fail:
+	free(payload);
+	return 0;
 }
 
 int ipc_handle_readable(int client_fd, struct ipc_client_state *state) {
@@ -262,8 +267,12 @@ int ipc_handle_writable(int client_fd, struct ipc_client_state *state) {
 
 }
 
-
 void ipc_shutdown(int ipc_socket, char *sock_path) {
 	close(ipc_socket);
 	unlink(sock_path);
+}
+
+void ipc_set_command_handler(struct ipc_command_handler *handler, void *data) {
+	command_handler = handler;
+	command_data = data;
 }
