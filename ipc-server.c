@@ -135,9 +135,13 @@ int ipc_send_reply(struct ipc_client_state *state, uint32_t len, uint32_t type, 
 		.type = type,
 	};
 	while (state->bufsize < state->buflen + len + sizeof(struct ipc_header)) {
-		if (!(state->write_buffer =
-			realloc(state->write_buffer, state->bufsize *= 2))) {
-			swaybg_log(LOG_ERROR, "Unable to reallocate buffer");
+		state->bufsize *= 2;
+		if (state->bufsize > 16384) { // do we need more than 16k?
+			swaybg_log(LOG_INFO, "IPC client write buffer too large");
+			return -1;
+		}
+		if (!(state->write_buffer = realloc(state->write_buffer, state->bufsize))) {
+			swaybg_log(LOG_INFO, "Unable to reallocate write buffer for IPC client");
 			return -1;
 		}
 	}
