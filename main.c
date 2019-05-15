@@ -9,6 +9,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
+#include <wordexp.h>
 #include <wayland-client.h>
 #include "background-image.h"
 #include "cairo.h"
@@ -395,7 +396,7 @@ static bool store_swaybg_output_config(struct swaybg_state *state,
 }
 
 static void parse_command_line(int argc, char **argv,
-		struct swaybg_state *state) {
+		struct swaybg_state *state, bool initial) {
 	static struct option long_options[] = {
 		{"color", required_argument, NULL, 'c'},
 		{"help", no_argument, NULL, 'h'},
@@ -425,6 +426,8 @@ static void parse_command_line(int argc, char **argv,
 	config->output = strdup("*");
 	config->mode = BACKGROUND_MODE_INVALID;
 	wl_list_init(&config->link); // init for safe removal
+
+	opterr = initial ? 1 : 0;
 
 	int c;
 	while (1) {
@@ -465,15 +468,21 @@ static void parse_command_line(int argc, char **argv,
 			wl_list_init(&config->link);  // init for safe removal
 			break;
 		case 'v':  // version
-			fprintf(stdout, "swaybg version " SWAYBG_VERSION "\n");
-			exit(EXIT_SUCCESS);
+			if (initial) {
+				fprintf(stdout, "swaybg version " SWAYBG_VERSION "\n");
+				exit(EXIT_SUCCESS);
+			}
 			break;
 		case 's': // socket
-			socket_path = strdup(optarg);
+			if (initial) {
+				socket_path = strdup(optarg);
+			}
 			break;
 		default:
-			fprintf(c == 'h' ? stdout : stderr, "%s", usage);
-			exit(c == 'h' ? EXIT_SUCCESS : EXIT_FAILURE);
+			if (initial) {
+				fprintf(c == 'h' ? stdout : stderr, "%s", usage);
+				exit(c == 'h' ? EXIT_SUCCESS : EXIT_FAILURE);
+			}
 		}
 	}
 	if (config && !store_swaybg_output_config(state, config)) {
@@ -490,7 +499,7 @@ static void parse_command_line(int argc, char **argv,
 		}
 		// continue into empty list
 	}
-	if (wl_list_empty(&state->configs)) {
+	if (initial && wl_list_empty(&state->configs)) {
 		fprintf(stderr, "%s", usage);
 		exit(EXIT_FAILURE);
 	}
@@ -507,21 +516,36 @@ static void parse_command_line(int argc, char **argv,
 				: BACKGROUND_MODE_SOLID_COLOR;
 		}
 	}
+	optind = 1;
 }
 
 
 int handle_set(uint32_t payload_len, void *payload, struct ipc_client_state *client_state, void *data) {
 	struct swaybg_state *state = data;
+
 	swaybg_log(LOG_DEBUG, "Received a SET request");
-	struct swaybg_output_config *config;
-	struct swaybg_output *output;
-	cairo_surface_t *image;
-	wl_list_for_each(config, &state->configs, link) {
-		if ((image = load_background_image((char *) payload))) {
-			free(config->image);
-			config->image = image;
-		}
+
+	int argc = *((int *)payload);
+	char **argv = calloc(argc + 1, sizeof(char *));
+	argv[argc] = 0;
+
+	void *cur = payload + sizeof(int);
+	int i;
+	for (i = 0; i < argc; ++i) {
+		if (cur - payload > payload_len)
+			break;
+		argv[i] = cur;
+		cur = memchr(cur, 0, payload_len - (cur - payload)) + 1;
 	}
+	if (i < argc) {
+		swaybg_log(LOG_INFO, "Invalid request from client");
+		ipc_send_reply(client_state, 5, IPC_REPLY_FAILURE, "FAIL");
+		return -1;
+	}
+
+	parse_command_line(argc, argv, state, false);
+
+	struct swaybg_output *output;
 	wl_list_for_each(output, &state->outputs, link) {
 		render_frame(output);
 	}
@@ -672,7 +696,7 @@ int main(int argc, char **argv) {
 	wl_list_init(&state.configs);
 	wl_list_init(&state.outputs);
 
-	parse_command_line(argc, argv, &state);
+	parse_command_line(argc, argv, &state, true);
 
 	state.display = wl_display_connect(NULL);
 	if (!state.display) {
