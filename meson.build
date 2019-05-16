@@ -13,6 +13,8 @@ project(
 
 add_project_arguments(
 	[
+		'-D_POSIX_C_SOURCE=200809L',
+		'-D_XOPEN_SOURCE=500',
 		'-Wno-unused-parameter',
 		'-Wno-unused-result',
 		'-Wundef',
