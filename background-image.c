@@ -1,4 +1,11 @@
 #include <assert.h>
+#include <limits.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <wayland-client.h>
 #include "background-image.h"
 #include "cairo.h"
 #include "log.h"
@@ -21,8 +28,52 @@ enum background_mode parse_background_mode(const char *mode) {
 	return BACKGROUND_MODE_INVALID;
 }
 
-cairo_surface_t *load_background_image(const char *path) {
+struct cache_entry {
+	char *path;
+	cairo_surface_t *surface;
+
+	time_t mtim_sec;
+	long mtim_nsec;
+
+	time_t ctim_sec;
+	long ctim_nsec;
+
+	struct wl_list link;
+};
+
+cairo_surface_t *load_background_image(struct wl_list *image_cache, const char *path) {
 	cairo_surface_t *image;
+	struct cache_entry *entry;
+	struct stat sb;
+	char real[PATH_MAX], curpath[PATH_MAX];
+
+	if (!realpath(path, &real[0])) {
+		swaybg_log_errno(LOG_ERROR, "Failed to resolve image path (%s)", path);
+		return NULL;
+	}
+	wl_list_for_each(entry, image_cache, link) {
+		if (realpath(entry->path, &curpath[0]) && !strcmp(real, curpath)) {
+			swaybg_log(LOG_INFO, "Found image %s (%s) at %s (%s)", path, real, entry->path, curpath);
+			if (access(curpath, F_OK)) {
+				// file does not exist now
+				// return cached copy
+				swaybg_log(LOG_INFO, "Loading image %s from cache!", path);
+				return entry->surface;
+			}
+			stat(curpath, &sb);
+			if (sb.st_mtim.tv_sec == entry->mtim_sec &&
+				sb.st_mtim.tv_nsec == entry->mtim_nsec &&
+				sb.st_ctim.tv_sec == entry->ctim_sec &&
+				sb.st_ctim.tv_nsec == entry->ctim_nsec) {
+				swaybg_log(LOG_INFO, "Loading image %s from cache!", path);
+				return entry->surface;
+			}
+			break;
+		}
+	}
+
+	stat(real, &sb);
+
 #if HAVE_GDK_PIXBUF
 	GError *err = NULL;
 	GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file(path, &err);
@@ -49,6 +100,16 @@ cairo_surface_t *load_background_image(const char *path) {
 				, cairo_status_to_string(cairo_surface_status(image)));
 		return NULL;
 	}
+	if (!entry || &entry->link == image_cache) {
+		entry = calloc(1, sizeof(struct cache_entry));
+		wl_list_insert(image_cache, &entry->link);
+		entry->path = strdup(path);
+	}
+	entry->surface = image;
+	entry->mtim_sec = sb.st_mtim.tv_sec;
+	entry->mtim_nsec = sb.st_mtim.tv_nsec;
+	entry->ctim_sec = sb.st_ctim.tv_sec;
+	entry->ctim_nsec = sb.st_ctim.tv_nsec;
 	return image;
 }
 
@@ -117,4 +178,14 @@ void render_background_image(cairo_t *cairo, cairo_surface_t *image,
 	}
 	cairo_paint(cairo);
 	cairo_restore(cairo);
+}
+
+void flush_image_cache(struct wl_list *image_cache) {
+	struct cache_entry *entry, *tmp;
+	wl_list_for_each_safe(entry, tmp, image_cache, link) {
+		cairo_surface_destroy(entry->surface);
+		free(entry->path);
+		wl_list_remove(&entry->link);
+		free(entry);
+	}
 }

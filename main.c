@@ -47,6 +47,7 @@ struct swaybg_state {
 	struct zxdg_output_manager_v1 *xdg_output_manager;
 	struct wl_list configs;  // struct swaybg_output_config::link
 	struct wl_list outputs;  // struct swaybg_output::link
+	struct wl_list image_cache;  // struct image_cache::link
 	int ipc_socket;
 	bool run_display;
 };
@@ -444,7 +445,7 @@ static void parse_command_line(int argc, char **argv,
 			break;
 		case 'i':  // image
 			free(config->image);
-			config->image = load_background_image(optarg);
+			config->image = load_background_image(&state->image_cache, optarg);
 			if (!config->image) {
 				swaybg_log(LOG_ERROR, "Failed to load image: %s", optarg);
 			}
@@ -555,12 +556,20 @@ int handle_set(uint32_t payload_len, void *payload, struct ipc_client_state *cli
 int handle_load(uint32_t payload_len, void *payload, struct ipc_client_state *client_state, void *data) {
 	(void) payload;
 	swaybg_log(LOG_DEBUG, "Received a LOAD request");
+	if (payload_len) {
+		if (!load_background_image(payload)) {
+			return ipc_send_reply(client_state, 3,
+				IPC_REPLY_FAILURE, "FAIL");
+		}
+	}
 	return ipc_send_reply(client_state, 3, IPC_REPLY_SUCCESS, "OK");
 }
 
 int handle_flush(uint32_t payload_len, void *payload, struct ipc_client_state *client_state, void *data) {
 	(void) payload;
+	struct swaybg_state *state = data;
 	swaybg_log(LOG_DEBUG, "Received a FLUSH request");
+	flush_image_cache(&state->image_cache);
 	return ipc_send_reply(client_state, 3, IPC_REPLY_SUCCESS, "OK");
 }
 
@@ -696,6 +705,7 @@ int main(int argc, char **argv) {
 	struct swaybg_state state = {0};
 	wl_list_init(&state.configs);
 	wl_list_init(&state.outputs);
+	wl_list_init(&state.image_cache);
 
 	parse_command_line(argc, argv, &state, true);
 
@@ -746,6 +756,8 @@ int main(int argc, char **argv) {
 	wl_list_for_each_safe(config, tmp_config, &state.configs, link) {
 		destroy_swaybg_output_config(config);
 	}
+
+	flush_image_cache(&state.image_cache);
 
 	return 0;
 }
