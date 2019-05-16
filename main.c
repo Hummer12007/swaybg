@@ -376,7 +376,6 @@ static bool store_swaybg_output_config(struct swaybg_state *state,
 		if (strcmp(config->output, oc->output) == 0) {
 			// Merge on top
 			if (config->image) {
-				free(oc->image);
 				oc->image = config->image;
 				config->image = NULL;
 			}
@@ -490,7 +489,7 @@ static void parse_command_line(int argc, char **argv,
 	}
 
 	// Check for invalid options
-	if (optind < argc) {
+	if (initial && optind < argc) {
 		config = NULL;
 		struct swaybg_output_config *tmp = NULL;
 		wl_list_for_each_safe(config, tmp, &state->configs, link) {
@@ -543,6 +542,8 @@ int handle_set(uint32_t payload_len, void *payload, struct ipc_client_state *cli
 	}
 
 	parse_command_line(argc, argv, state, false);
+
+	free(argv);
 
 	struct swaybg_output *output;
 	wl_list_for_each(output, &state->outputs, link) {
@@ -686,6 +687,7 @@ void run_main_loop(struct swaybg_state *state) {
 	}
 
 	free(fds);
+	free(clients);
 }
 
 int main(int argc, char **argv) {
