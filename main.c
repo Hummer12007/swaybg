@@ -555,9 +555,11 @@ int handle_set(uint32_t payload_len, void *payload, struct ipc_client_state *cli
 
 int handle_load(uint32_t payload_len, void *payload, struct ipc_client_state *client_state, void *data) {
 	(void) payload;
+	struct swaybg_state *state = data;
+
 	swaybg_log(LOG_DEBUG, "Received a LOAD request");
 	if (payload_len) {
-		if (!load_background_image(payload)) {
+		if (!load_background_image(&state->image_cache, payload)) {
 			return ipc_send_reply(client_state, 3,
 				IPC_REPLY_FAILURE, "FAIL");
 		}
